@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitor Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: #fff;
+      color: #111;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+
+    header {
+      margin-bottom: 32px;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      font-size: 13px;
+      color: #888;
+    }
+
+    .connect-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 32px;
+    }
+
+    .connect-bar input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .connect-bar input:focus {
+      border-color: #999;
+    }
+
+    .connect-bar button {
+      padding: 8px 16px;
+      background: #111;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .connect-bar button:hover { background: #333; }
+    .connect-bar button:disabled { background: #ccc; cursor: default; }
+
+    #status {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 24px;
+    }
+
+    #status .dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    #status .dot.live { background: #22c55e; }
+    #status .dot.off { background: #ccc; }
+
+    .results-list {
+      list-style: none;
+    }
+
+    .results-list li {
+      padding: 14px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .results-list li:last-child { border-bottom: none; }
+
+    .result-title {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .result-title a {
+      color: #111;
+      text-decoration: none;
+    }
+
+    .result-title a:hover { text-decoration: underline; }
+
+    .result-meta {
+      font-size: 12px;
+      color: #888;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .result-meta a {
+      color: #888;
+      text-decoration: none;
+    }
+
+    .result-meta a:hover { color: #111; }
+
+    .result-monitor {
+      font-size: 11px;
+      color: #666;
+      background: #f5f5f5;
+      padding: 1px 6px;
+      border-radius: 3px;
+    }
+
+    .empty {
+      text-align: center;
+      color: #ccc;
+      font-size: 14px;
+      padding: 60px 0;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Monitor Viewer</h1>
+    <p>Paste your webhook.site token to view monitoring results in real-time.</p>
+  </header>
+
+  <div class="connect-bar">
+    <input type="text" id="token-input" placeholder="webhook.site token or full URL" />
+    <button id="connect-btn" onclick="toggle()">Connect</button>
+  </div>
+
+  <div id="status"><span class="dot off"></span>Not connected</div>
+
+  <ul class="results-list" id="results"></ul>
+  <div class="empty" id="empty">No results yet</div>
+
+  <script>
+    let polling = null;
+    let seenIds = new Set();
+
+    function extractToken(input) {
+      input = input.trim();
+      // Full URL: https://webhook.site/abc-123
+      const match = input.match(/webhook\.site\/(?:token\/)?([0-9a-f-]{36})/i);
+      if (match) return match[1];
+      // Bare token
+      if (/^[0-9a-f-]{36}$/i.test(input)) return input;
+      return null;
+    }
+
+    function toggle() {
+      if (polling) {
+        stop();
+      } else {
+        start();
+      }
+    }
+
+    function start() {
+      const input = document.getElementById("token-input").value;
+      const token = extractToken(input);
+      if (!token) {
+        alert("Invalid token. Paste a webhook.site URL or token UUID.");
+        return;
+      }
+
+      // Save to URL for sharing
+      history.replaceState(null, "", "?token=" + token);
+
+      document.getElementById("connect-btn").textContent = "Disconnect";
+      setStatus(true, "Connecting...");
+      fetchResults(token);
+      polling = setInterval(() => fetchResults(token), 5000);
+    }
+
+    function stop() {
+      clearInterval(polling);
+      polling = null;
+      document.getElementById("connect-btn").textContent = "Connect";
+      setStatus(false, "Disconnected");
+    }
+
+    function setStatus(live, text) {
+      document.getElementById("status").innerHTML =
+        `<span class="dot ${live ? 'live' : 'off'}"></span>${text}`;
+    }
+
+    async function fetchResults(token) {
+      try {
+        const resp = await fetch(
+          `https://webhook.site/token/${token}/requests?sorting=newest&per_page=50`
+        );
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        setStatus(true, `Live — ${data.total} requests received`);
+        renderResults(data.data);
+      } catch (e) {
+        setStatus(false, `Error: ${e.message}`);
+      }
+    }
+
+    function parseContent(raw) {
+      try { return JSON.parse(raw); } catch { return null; }
+    }
+
+    function renderResults(requests) {
+      const list = document.getElementById("results");
+      const empty = document.getElementById("empty");
+      const items = [];
+
+      for (const req of requests) {
+        const record = parseContent(req.content);
+        if (!record || record._event) continue; // skip lifecycle events
+        items.push(record);
+      }
+
+      if (items.length === 0) {
+        empty.style.display = "block";
+        return;
+      }
+
+      empty.style.display = "none";
+      list.innerHTML = "";
+
+      for (const r of items) {
+        const li = document.createElement("li");
+        const time = r.created_at ? new Date(r.created_at).toLocaleString() : "";
+        li.innerHTML = `
+          <div class="result-title"><a href="${esc(r.url)}" target="_blank">${esc(r.title || "(no title)")}</a></div>
+          <div class="result-meta">
+            <span>${r.points || 0} pts</span>
+            <span>${r.comments || 0} comments</span>
+            <span>by ${esc(r.author || "?")}</span>
+            <span>${time}</span>
+            <a href="${esc(r.hn_url)}" target="_blank">HN</a>
+            ${r.monitor ? `<span class="result-monitor">${esc(r.monitor)}</span>` : ""}
+          </div>
+        `;
+        list.appendChild(li);
+      }
+    }
+
+    function esc(s) {
+      const d = document.createElement("div");
+      d.textContent = s || "";
+      return d.innerHTML;
+    }
+
+    // Auto-connect if token is in URL
+    (function init() {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("token");
+      if (token) {
+        document.getElementById("token-input").value = token;
+        start();
+      }
+    })();
+  </script>
+</body>
+</html>
